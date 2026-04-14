@@ -17,7 +17,10 @@ Instead of only returning empty/non-empty results, the system returns:
 
 ## Quick start
 
-Before you start, make sure to use the virtual environment configured in this directory to use the necessary packages.
+Python version: 3.10.12
+Before you start, make sure to install packages in requirements.txt for necessary packages.
+`pip install -r requirements.txt`
+
 
 1. Enter the project implementation directory:
 

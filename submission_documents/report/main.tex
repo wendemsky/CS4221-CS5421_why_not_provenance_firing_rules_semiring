@@ -18,24 +18,15 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \begin{document}
 
-\title{[Title]}
+\title{Firing Rules and Semiring: A Comparative Study of Why-Not Provenance}
 
 \author{
-  [Author 1]\inst{1} \and
-  [Author 2]\inst{2} \and
-  [Author 3]\inst{3}
+  Lee Zhi Yi (A0258639L) \and
+  Phan Dinh Hung (A0255791U) \and
+  Himanshu Maithani (A0314584B)
 }
 
-\institute{
-  [Institution 1], [Address 1] \\
-  \email{[email1]}
-  \and
-  [Institution 2], [Address 2] \\
-  \email{[email2]}
-  \and
-  [Institution 3], [Address 3] \\
-  \email{[email3]}
-}
+\institute{National University of Singapore}
 
 \maketitle
 
@@ -183,7 +174,84 @@ evaluation strategy, and explanation mechanism.
 \subsection{Firing-Rules Approach}
 \label{sec:firing-rules}
 
-% [TODO: Methodology content to be added]
+The firing-rules approach explains why-not provenance by translating a
+query into Datalog form, enumerating the candidate derivations that
+could have produced a target tuple, evaluating each goal of each
+derivation individually, and collecting the failed derivations as
+evidence for absence. The central idea is that a tuple is missing
+because every possible relevant derivation fails, and the explanation
+identifies which goals within each derivation are responsible for that
+failure.
+
+\paragraph{Step 1: Query Normalization.}
+The query is first expressed as a set of Datalog rules. Each rule has a
+head predicate and a body consisting of positive goals (EDB lookups),
+negated goals (\texttt{NOT EXISTS} checks), and comparison predicates.
+For example:
+\begin{equation*}
+  r_1\!: Q(X,Y) \mathbin{:-}
+    \mathrm{Train}(X,Z),\;
+    \mathrm{Train}(Z,Y),\;
+    \neg\,\mathrm{Train}(X,Y).
+\end{equation*}
+This normalized form is the basis for all subsequent derivation
+enumeration and evaluation.
+
+\paragraph{Step 2: Provenance Question.}
+The user specifies a why-not question of the form
+$\mathit{WHYNOT}\;Q(a,b)$, identifying the target predicate and the
+missing tuple. Only derivations whose head matches this pattern need to
+be considered, avoiding evaluation of the full derivation space.
+
+\paragraph{Step 3: Domain and Binding Enumeration.}
+For each variable in a rule, a domain is constructed from the active
+domain of the database. Candidate derivations are formed by enumerating
+all variable bindings consistent with the target tuple pattern.
+For $\mathit{WHYNOT}\;Q(s,n)$ with $Z$ ranging over $\{n,s,c,w\}$, the
+candidates are $(X{=}s,\,Y{=}n,\,Z{=}c)$, $(X{=}s,\,Y{=}n,\,Z{=}w)$,
+$(X{=}s,\,Y{=}n,\,Z{=}s)$, and $(X{=}s,\,Y{=}n,\,Z{=}n)$.
+
+\paragraph{Step 4: Per-Goal Evaluation and Firing Tables.}
+For each candidate derivation, every goal in the rule body is evaluated
+independently against the database. The results are recorded in a
+\emph{firing relation}
+$F_{r_1}(X,Y,Z,\,g_1^{\mathit{ok}},\,g_2^{\mathit{ok}},\,g_3^{\mathit{ok}},\,\mathit{status})$,
+where each $g_i^{\mathit{ok}}$ records whether goal~$i$ succeeded and
+$\mathit{status} = g_1^{\mathit{ok}} \wedge g_2^{\mathit{ok}} \wedge
+\cdots \wedge g_n^{\mathit{ok}}$.
+Table~\ref{tab:firing} shows an example firing table for
+$\mathit{WHYNOT}\;Q(s,n)$.
+
+\begin{table}[t]
+\centering
+\caption{Example firing table for $\mathit{WHYNOT}\;Q(s,n)$ under rule~$r_1$.}
+\label{tab:firing}
+\begin{tabular}{ccccccc}
+\toprule
+$X$ & $Y$ & $Z$ & $g_1^{\mathit{ok}}$ & $g_2^{\mathit{ok}}$ & $g_3^{\mathit{ok}}$ & status \\
+\midrule
+$s$ & $n$ & $c$ & false & false & true & false \\
+$s$ & $n$ & $w$ & false & false & true & false \\
+$s$ & $n$ & $s$ & false & false & true & false \\
+$s$ & $n$ & $n$ & false & false & true & false \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Step 5: Explanation Graph Construction.}
+The failed derivations are assembled into a provenance graph with three
+node types: \emph{tuple nodes} representing present or absent tuples,
+\emph{rule nodes} representing specific derivations, and \emph{goal
+nodes} representing individual goals within a derivation. For a why-not
+explanation, the graph connects the missing tuple node to its failed
+rule nodes, and each failed rule node to its failed goal nodes.
+
+\paragraph{Step 6: Output.}
+The system returns the set of failed derivations together with the
+graph-structured explanation. For the example above, the explanation
+indicates that $Q(s,n)$ is absent because all four candidate
+derivations fail, each blocked by the absence of $\mathrm{Train}(s,Z)$
+and $\mathrm{Train}(Z,n)$ for any intermediate node~$Z$.
 
 %-------------------------------------------------------------------
 \subsection{Semiring-Based Approach: Theory}
@@ -265,7 +333,125 @@ queried column was projected away by~$\pi$.
 \subsection{Firing-Rules Implementation}
 \label{sec:impl-fr}
 
-% [TODO: Implementation content + visualizer to be added]
+The firing-rules system is a modular Python implementation that accepts
+mixed input specifications and returns a JSON explanation.
+The codebase is organized as follows:
+\texttt{why\_not\_provenance.py} is a CLI wrapper that reads from stdin
+or a file argument and prints JSON;
+\texttt{provenance/api.py} exposes a public
+\texttt{explain\_why\_not(query\_text)} entry point;
+\texttt{provenance/input\_parser.py} handles mixed-input normalization,
+optional PostgreSQL loading, and SQL execution;
+\texttt{provenance/sql\_rule\_builder.py} lowers SQL blocks to Datalog
+rules;
+\texttt{provenance/engine.py} performs binding generation, goal
+evaluation, and explanation construction; and
+and \texttt{provenance/helpers.py} together with
+\texttt{provenance/models/} supply shared parsing utilities and
+typed dataclasses.
+
+\paragraph{Internal representation.}
+The parser produces a \texttt{Program} object holding the EDB (base
+facts by predicate), declared schemas, explicit Datalog rules,
+SQL-lowered rules, the provenance question, and optional SQL execution
+payloads.
+Each rule-body goal is typed as \texttt{pos} (positive atom),
+\texttt{neg} (negated atom), or \texttt{cmp} (comparison).
+Values are normalized to strings at ingestion; numeric comparison
+operators attempt coercion when both operands parse as numbers.
+Variables follow an ALL\_CAPS convention
+(\texttt{[A-Z\_][A-Z0-9\_]*}) to avoid treating string literals such
+as \texttt{Singapore} as variables.
+
+\paragraph{Input parsing and normalization.}
+The parser scans input blocks in order, recognizing \texttt{SCHEMA}
+declarations, EDB facts, Datalog rules, SQL blocks, the provenance
+question, and an optional connection directive.
+When a PostgreSQL connection is available --- resolved from environment
+variables \texttt{WHY\_NOT\_DB\_CONNECTION},
+\texttt{DATABASE\_URL}, or
+\texttt{POSTGRES\_CONNECTION\_STRING} (with optional \texttt{.env}
+loading) --- the system fetches all referenced base tables into the
+in-memory EDB and executes any SQL blocks, retaining raw results in the
+output payload.
+Table loading and SQL execution can be parallelized via
+\texttt{WHY\_NOT\_MAX\_WORKERS}.
+
+\paragraph{SQL-to-rule lowering.}
+Each SQL block is translated into one Datalog-like rule under a
+restricted fragment supporting
+\texttt{SELECT}-\texttt{FROM}-\texttt{JOIN}-\texttt{WHERE},
+\texttt{AND} conjunctions,
+equality and inequality comparisons ($=$, $\neq$, $<$, $\leq$, $>$,
+$\geq$), and a limited \texttt{NOT EXISTS} pattern.
+Table references become positive atom goals with synthetic variables
+(e.g., \texttt{S\_W\_ID}, \texttt{I\_I\_PRICE});
+join and where predicates become comparison goals, or negated atom goals
+for supported \texttt{NOT EXISTS} forms;
+and \texttt{SELECT} expressions become head terms.
+With a single SQL block the generated head predicate matches the
+question predicate; with multiple blocks, heads are named
+\texttt{QSQL1}, \texttt{QSQL2}, and so on.
+
+\paragraph{WHY-NOT evaluation.}
+Given the target tuple $Q(t_1,\ldots,t_n)$, the engine proceeds in
+three phases.
+\begin{enumerate}
+  \item \textbf{Head materialization.} Initialize the relation store
+    from the EDB, enumerate candidate bindings for each rule, and
+    record successful head tuples.
+  \item \textbf{Target-rule filtering.} Retain only rules whose head
+    predicate matches the target; constrain head variables to target
+    values where applicable.
+  \item \textbf{Failed-derivation extraction.} For each retained rule,
+    enumerate bindings using a join-driven strategy: positive goals are
+    unified against relation rows first, then remaining unbound variables
+    are expanded over their active-domain values.
+    Each binding is grounded and every body goal is evaluated
+    independently (positive atom membership, negated atom absence, or
+    comparison).
+    Bindings whose grounded head equals the target tuple and whose
+    overall status is false constitute the failed derivations.
+\end{enumerate}
+The join-driven strategy avoids constructing the full Cartesian product
+of variable domains in most cases, but worst-case combinatorial growth
+can still occur for rules with many unbound variables after positive
+goals are exhausted.
+
+\paragraph{Output.}
+The JSON output contains \texttt{mode}, \texttt{target},
+\texttt{failed\_derivation\_count},
+\texttt{failed\_derivations} (one record per failed binding with
+per-goal status), \texttt{explanation\_graph}, \texttt{query\_results},
+and \texttt{message}.
+Each failed-derivation record follows the structure introduced in
+Section~\ref{sec:firing-rules}: a \texttt{rule\_id}, the grounded
+\texttt{binding}, a \texttt{goal\_results} list with the outcome of
+each goal, and a boolean \texttt{status}.
+Figure~\ref{fig:prov-graph} shows the explanation graph for
+$\mathit{WHYNOT}\;Q(n,n)$: the missing tuple node (pink square) connects
+to four \texttt{sql\_r1} rule instances (ovals), each linked to its
+failing goal nodes (blue diamonds), which are either comparison failures
+or negated-atom checks.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/fig_prov_graph.png}
+\caption{Explanation graph for $\mathit{WHYNOT}\;Q(n,n)$.
+  Pink square: missing tuple node.
+  Ovals: failed rule instances, labelled by variable binding.
+  Blue diamonds: failing goals (comparison failure or negated atom).}
+\label{fig:prov-graph}
+\end{figure}
+
+\paragraph{Scope and limitations.}
+Only the WHY-NOT output path is implemented; the WHY (why-present) path
+is parsed but not evaluated.
+SQL support is restricted to the fragment above: no aggregates, no
+\texttt{OR}, and no complex nesting.
+The implementation is intentionally scoped to this subset, which covers
+all four operator categories (SELECT, PROJECT, JOIN, UNION) used in the
+benchmark.
 
 %-------------------------------------------------------------------
 \subsection{Semiring Implementation}
@@ -306,7 +492,7 @@ than requiring a full re-execution.
 \paragraph{Explainer.}
 The Explainer formats the diagnosis as a structured report including
 the cause label, a plain-English suggestion, and the annotation under
-each of the four semirings — illustrating the escalating
+each of the four semirings --- illustrating the escalating
 expressiveness of the information order.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -569,7 +755,44 @@ individual missing tuples.
 \section{Conclusion}
 \label{sec:conclusion}
 
-% [TODO: Content to be added]
+We implemented and compared two approaches to why-not provenance that
+share a common five-stage conceptual pipeline but differ substantially
+in execution strategy, performance, and output semantics.
+The firing-rules approach normalizes queries to Datalog, enumerates
+candidate variable bindings over the active domain, evaluates each body
+goal independently against the database, and constructs a
+graph-structured explanation centered on a single missing tuple.
+The semiring approach annotates base tuples with provenance tokens,
+propagates annotations through a relational operator tree, and diagnoses
+a missing tuple by tracing which operator drove its annotation to zero.
+
+Performance evaluation on TPC-C confirms that the two systems are
+complementary.
+The semiring approach is 9--50$\times$ faster because it delegates
+evaluation to PostgreSQL and avoids in-memory binding enumeration.
+The firing-rules approach is slower due to Python-based Cartesian
+expansion but produces bounded, query-size-independent explanations:
+output size depends only on rule count and body depth, not on result
+cardinality.
+The Q05 PROJECT case illustrates the contrast sharply: the semiring
+system annotates one output tuple with a compact witness; the
+firing-rules system enumerates 963 failed derivations totalling over
+1\,MB because every non-matching warehouse is a separate explanation.
+
+Correctness properties P1--P5 were verified across all 16 benchmark
+queries, confirming that cross-semiring homomorphisms hold in practice
+and that the why-not diagnosis correctly identifies the three root
+causes: predicate failure, missing join partner, and absent source
+tuple.
+
+The semiring approach is best suited to scenarios requiring full
+provenance annotation over complete query results; the firing-rules
+approach is more appropriate for interactive debugging of individual
+missing tuples.
+A natural direction for future work is tighter integration of the two:
+semiring annotations could bound the active domain used by the
+firing-rules engine, reducing the cost of binding enumeration for
+queries with large intermediate relations.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \bibliographystyle{splncs04}

@@ -21,7 +21,7 @@ This repository is organized around the two implementation directions discussed 
 - Refer to `rule_firing/README.md` and `rule_firing/src/provenance_visualizer/README.md` for more details.
 
 ### `semiring_provenance/`
-- Main Python implementation for semiring-based why-not provenance.
+- Main Python implementation for semiring-based why-not provenance. (This project is developed and tested using Python 3.13.1.)
 - Contains:
   - `src/` for parser, annotator, evaluator, semirings, and explainer
   - `queries/` for the core SQL examples
@@ -69,8 +69,7 @@ python semiring_provenance\cli.py benchmark correctness
 python semiring_provenance\cli.py benchmark performance
 ```
 
-## Notes For GitHub Submission
+## AI Declaration 
+This repository includes code and content generated with the assistance of AI tools, including Claude, and has been reviewed and validated by the author.
 
-- Local environments, caches, Claude settings, and archived zip files are ignored.
-- The repo keeps both approaches side by side because the report compares them directly.
-- Submission-facing materials are grouped under `submission_documents/` so the final deliverables are easy to find.
+

@@ -30,7 +30,7 @@ cd rule_firing
 
 2. Run on an input file:
 
-Navigate to `rule_firing/src` and run.
+Navigate to `src` and run.
 
 ```bash
 python3 why_not_provenance.py < YOUR_INPUT_FILE.txt > YOUR_OUTPUT_FILE.json
@@ -57,8 +57,8 @@ WHY_NOT_MAX_WORKERS=4 python3 why_not_provenance.py < test.txt > test_result.jso
 
 ## What to read first
 
-- `firing_rules/README.md` — implementation usage and input format
-- `firing_rules/firing_rules.md` — firing-rules background/concepts
+- `README.md` — implementation usage and input format
+- `src/provenance_visualizer/README.md` - instructions on how to use the visualizer
 - `tests/README.md` — SQL-focused evaluation plan (correctness, completeness, informativeness)
 - `TPC_C_export/TPCCReadme.txt` — context for bundled TPC-C data files
 

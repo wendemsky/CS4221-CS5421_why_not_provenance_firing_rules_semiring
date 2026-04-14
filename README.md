@@ -17,7 +17,8 @@ This repository is organized around the two implementation directions discussed 
 
 ### `rule_firing/`
 - Rule-firing implementation and notes.
-- Includes the `firing_rules/` package, visualizer work, tests, and the original archive kept locally for reference.
+- Includes the `rile_firing/src` package, visualizer work, tests, and the original archive kept locally for reference.
+- Refer to `rule_firing/README.md` and `rule_firing/src/provenance_visualizer/README.md` for more details.
 
 ### `semiring_provenance/`
 - Main Python implementation for semiring-based why-not provenance.
@@ -35,6 +36,7 @@ This repository is organized around the two implementation directions discussed 
 
 ## Quick Start
 
+### For semiring provenance
 1. Copy `.env.example` to `.env` in the repo root and fill in the PostgreSQL credentials.
 2. Create a virtual environment and install the semiring dependencies:
 
@@ -44,7 +46,18 @@ python -m venv venv
 pip install -r semiring_provenance\requirements.txt
 ```
 
-3. Load the TPC-C files from `semiring_provenance/TPC_C_export/` into PostgreSQL.
+### For rule-firing provenance
+1. Create `.env` in the `rule_firing/src` directory and fill in the PostgreSQL credentials.
+2. Create a virtual environment and install the dependencies:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r rule_firing\requirements.txt
+```
+
+3. Refer to `rule_firing/README.md` and `rule_firing/src/provenance_visualizer/README.md` for more details on how to use the system and the visualizer.
+
 
 ## Running The Semiring System
 

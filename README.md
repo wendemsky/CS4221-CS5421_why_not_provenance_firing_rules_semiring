@@ -1,559 +1,63 @@
-# Why-Not Provenance in PostgreSQL
+# Why-Not Provenance Project
 
-A system for explaining why expected tuples are missing from SQL query results,
-built on semiring provenance theory and evaluated against the TPC-C benchmark database.
+This repository is organized around the two implementation directions discussed in the report for topic 8, plus the final submission materials.
 
----
+## Repository Layout
 
-## Table of Contents
-
-1. [Background: Semiring Provenance](#1-background-semiring-provenance)
-2. [System Design](#2-system-design)
-3. [The Database: TPC-C](#3-the-database-tpc-c)
-4. [Installation](#4-installation)
-5. [Usage](#5-usage)
-6. [Benchmark](#6-benchmark)
-7. [File Structure](#7-file-structure)
-
----
-
-## 1. Background: Semiring Provenance
-
-### What is Provenance?
-
-Provenance answers the question: **where did this data come from?**
-
-In a relational database, a query result tuple may be derived from one or many
-base tuples across several tables. Provenance tracks that derivation. It is
-useful for debugging, auditing, and — in our case — explaining *missing* answers.
-
-### K-Relations
-
-The **K-relations framework** (Green, Karvounarakis, Tannen, PODS 2007) is the
-theoretical foundation of this system.
-
-A **K-relation** is a relation where every tuple is annotated with an element
-from a semiring K:
-
-```
-items as K-relation (How semiring):
-
- i_id | i_name       | i_price | annotation
-------|--------------|---------|-------------------
-  1   | Indapamide   | 95.23   | x_{items_1}
-  3   | Meprobamate  | 11.64   | x_{items_3}
-  ...
-```
-
-Each base tuple gets a unique **provenance token** (variable). As tuples flow
-through query operators, their tokens are combined algebraically. The final
-annotation of an output tuple encodes the complete derivation history.
-
-### Semiring Definition
-
-A semiring `K = (K, +, x, 0, 1)` is an algebraic structure with two binary
-operations satisfying:
-
-| Property | Rule |
-|---|---|
-| `(K, +, 0)` | Commutative monoid |
-| `(K, x, 1)` | Monoid |
-| Distributivity | `a x (b + c) = axb + axc` |
-| Annihilation | `0 x a = a x 0 = 0` |
-
-The mapping of relational operators to semiring operations is:
-
-| Relational operator | Semiring operation | Reason |
-|---|---|---|
-| UNION / OR | `+` (add) | Either source suffices |
-| JOIN / AND | `x` (multiply) | Both sources required |
-| SELECT pass | `x 1` | Tuple unchanged |
-| SELECT fail | `x 0` | Tuple annihilated |
-| PROJECT duplicate | `+` | Merge annotations of equal projected tuples |
-
-The **annihilation law** (`0 x a = 0`) is what makes why-not possible: any
-tuple that fails a filter gets its annotation multiplied by 0 and disappears
-from the output. A missing tuple therefore has annotation `0` in the result,
-and we can trace back to find *where* the annihilation happened.
-
-### The Four Semirings
-
-The system implements four semirings of increasing expressiveness:
-
-#### 1. Boolean  `B = ({0,1}, OR, AND, 0, 1)`
-
-- Each base tuple has annotation `1` (True).
-- Addition = OR, multiplication = AND.
-- A missing tuple has annotation `0` (False).
-- **Power:** Can only say "the tuple is absent." No further detail.
-
-```
-Indapamide in result?  -> annotation = True  (present)
-Meprobamate in result? -> annotation = False (absent)
-```
-
-#### 2. Bag  `N = (nat, +, x, 0, 1)`
-
-- Each base tuple has annotation `1` (multiplicity 1).
-- Addition = integer addition, multiplication = integer multiplication.
-- A missing tuple has annotation `0`.
-- **Power:** Distinguishes "appeared 0 times" from "appeared N times".
-  Does not say *why* multiplicity is 0.
-
-```
-Indapamide in result?  -> multiplicity = 1
-Meprobamate in result? -> multiplicity = 0 (ABSENT)
-```
-
-#### 3. Why-Provenance  `W = (sets of sets, union, pairwise-union, empty, {empty})`
-
-- Each base tuple `t` has annotation `{{t}}` — one witness set containing
-  just that tuple.
-- Addition = union of witness sets.
-- Multiplication = pairwise union of witness sets across both sides.
-- A missing tuple has annotation `empty` — no witnesses.
-- **Power:** Identifies *which sets of base tuples* are witnesses. For a
-  missing tuple, the empty witness set points directly to which base tuple(s)
-  were needed but absent or filtered.
-
-```
-Meprobamate filtered?  -> witnesses = empty  (no witness exists)
-                          (would need {items_3} to pass the filter)
-```
-
-#### 4. How-Provenance (Polynomial)  `N[X]`
-
-- Each base tuple `t` gets a unique variable `x_t`.
-- Annotations are **polynomials** over these variables.
-- Addition = polynomial addition, multiplication = polynomial multiplication.
-- A missing tuple has the **zero polynomial**.
-- **Power:** The richest annotation. A join of `items_1` with `stocks_301_1`
-  gives monomial `x_{items_1} * x_{stocks_301_1}`. Multiple join paths give
-  multiple monomials (sum). A missing tuple has no monomials — every potential
-  derivation path was killed.
-
-```
-items i JOIN stocks s ON i.i_id = s.i_id:
-
-  (Indapamide, w=301, qty=338) -> polynomial = x_{items_1} * x_{stocks_301_1}
-  (SYLATRON,   no stock)       -> polynomial = 0  (no terms formed)
-```
-
-**Information ordering:** How >= Why >= Bag >= Boolean.
-Every semiring can be recovered from the How polynomial by projection:
-- Boolean: any non-zero polynomial -> True
-- Bag: sum all coefficients
-- Why: keep monomials as witness sets, drop coefficients
-
-### From Positive to Why-Not Provenance
-
-Standard semiring provenance tracks what IS in the output (positive provenance).
-Why-not provenance explains what is **missing**.
-
-The bridge is the **annihilation law**: because `0 x a = 0`, any tuple that
-fails a predicate or has a missing join partner ends up with the zero annotation.
-
-Our why-not engine:
-1. Evaluates the query as a K-relation (provenance tracked throughout).
-2. Locates the missing tuple — it has annotation `zero()` in the result.
-3. Walks the evaluation trace backwards, applying per-operator rules to find
-   the node where the tuple's annotation first became zero.
-4. Reports the blocking operator, the failed predicate or missing partner,
-   and what would need to change to make the tuple appear.
-
----
-
-## 2. System Design
-
-### Architecture
-
-```
-User Input
-  SQL query + missing tuple (key=val,...)
-       |
-       v
-+-------------+
-|  parser.py  |  SQL string -> operator tree (ScanNode, SelectNode,
-|             |  ProjectNode, JoinNode, UnionNode)
-+------+------+
-       | OperatorTree
-       v
-+--------------+
-| annotator.py |  Connect to PostgreSQL (+ ProvSQL if installed).
-|              |  Fetch base table rows. Assign provenance tokens.
-|              |  Return K-relations: [{col:val, _token:str, ...}]
-+------+-------+
-       | K-Relations
-       v
-+--------------+
-| evaluator.py |  Recursively evaluate operator tree over K-relations.
-|              |  At each node, apply semiring +/x to annotations.
-|              |  Record EvaluationTrace (intermediate K-relations).
-+------+-------+
-       | EvaluationTrace
-       v
-+--------------+
-|  why_not.py  |  Walk trace. For missing tuple, find blocking node.
-|              |  Determine cause: SOURCE_MISSING / PREDICATE_FAILED /
-|              |  JOIN_FAILED / PROJECTION_HIDDEN.
-|              |  Compute annotations under all four semirings.
-+------+-------+
-       | WhyNotExplanation
-       v
-+---------------+
-| explainer.py  |  Format explanation as a human-readable report.
-|               |  Show cause analysis + per-semiring annotations.
-+---------------+
-       |
-       v
-  Printed output / benchmark results
-```
-
-### Pipeline Step by Step
-
-#### Step 1 — Parse
-
-`parser.py` decomposes the SQL into a logical operator tree.
-
-```python
-from src.parser import parse_query
-tree = parse_query("SELECT i_name, i_price FROM items WHERE i_price > 50")
-# -> ProjectNode(['i_name', 'i_price'])
-#     └── SelectNode([i_price > 50])
-#           └── ScanNode('items', 'items')
-print(tree)
-```
-
-#### Step 2 — Annotate
-
-`annotator.py` connects to PostgreSQL and fetches K-relations.
-If ProvSQL is installed, the `provsql` UUID column is used as the token.
-Otherwise, tokens are generated from primary keys (e.g. `items_3`).
-
-```python
-from src.annotator import Annotator, get_connection
-conn = get_connection()
-annotator = Annotator(conn)
-k_rel = annotator.get_k_relation("items")
-# -> [{'i.i_id': 1, 'i.i_name': 'Indapamide', ..., '_token': 'items_1'}, ...]
-```
-
-#### Step 3 — Evaluate
-
-`evaluator.py` walks the operator tree, applying semiring operations at each node.
-
-```python
-from src.evaluator import Evaluator
-from src.semirings import HowProvenance
-evaluator = Evaluator(annotator, HowProvenance())
-trace = evaluator.evaluate(tree)
-# trace.k_relation -> annotated result rows
-# each row: {..., '_annotation': {frozenset({'items_1'}): 1}}
-```
-
-For a missing tuple, its annotation is the zero polynomial `{}`.
-
-#### Step 4 — Diagnose
-
-`why_not.py` traces the EvaluationTrace to find the blocking operator.
-
-```python
-from src.why_not import WhyNotEngine
-engine = WhyNotEngine(annotator)
-explanation = engine.explain(tree, {"i_name": "Meprobamate", "i_price": 11.64})
-# explanation.cause           -> Cause.PREDICATE_FAILED
-# explanation.failed_predicates -> [i_price > 50]
-# explanation.actual_values   -> {"i_price": 11.64}
-```
-
-#### Step 5 — Explain
-
-`explainer.py` formats the explanation with cause analysis and all semiring annotations.
-
-```python
-from src.explainer import format_explanation
-print(format_explanation(explanation))
-```
-
-Example output:
-
-```
-============================================================
-WHY-NOT PROVENANCE EXPLANATION
-============================================================
-
-Missing tuple:
-  i_name = 'Meprobamate'
-  i_price = 11.64
-
-------------------------------------------------------------
-CAUSE ANALYSIS
-------------------------------------------------------------
-  Cause  : FILTERED BY WHERE CLAUSE
-  Detail : The tuple exists in the base tables but was
-           blocked by one or more WHERE predicates.
-
-    Predicate : i_price > 50
-    Actual    : i_price = 11.64
-    Gap       : -38.36  (need > 50, got 11.64)
-
-------------------------------------------------------------
-SEMIRING ANNOTATIONS
-------------------------------------------------------------
-
-  [BOOLEAN semiring]
-  Question   : Is the tuple in the output at all?
-  Annotation : ABSENT
-
-  [BAG semiring]
-  Question   : How many times does it appear?
-  Annotation : multiplicity=0 (ABSENT)
-
-  [WHY semiring]
-  Question   : Which sets of base tuples are witnesses?
-  Annotation : witnesses=empty (ABSENT)
-
-  [HOW semiring]
-  Question   : Full provenance polynomial over base tuple variables.
-  Annotation : polynomial=0 (ABSENT)
-============================================================
-```
-
-### Supported Operators
-
-| Operator | SQL syntax | Semiring mapping |
-|---|---|---|
-| SCAN | `FROM table` | token() per base tuple |
-| SELECT | `WHERE pred` | filter: pass -> x1, fail -> x0 |
-| PROJECT | `SELECT col1, col2` | duplicates merged via + |
-| JOIN | `JOIN t ON t1.c = t2.c` | matching pairs: annot = x(left, right) |
-| UNION | `UNION` | both sides merged via + |
-
-**Current scope:** 2-way equijoins, conjunctive (AND) WHERE predicates,
-single UNION level.
-
----
-
-## 3. The Database: TPC-C
-
-We use the warehouse/item/stock portion of the TPC-C schema:
-
-```sql
-CREATE TABLE items (
-    i_id    INTEGER PRIMARY KEY,
-    i_im_id CHAR(8) UNIQUE NOT NULL,
-    i_name  VARCHAR(64) NOT NULL,
-    i_price NUMERIC NOT NULL CHECK(i_price > 0)
-);
-
-CREATE TABLE warehouses (
-    w_id      INTEGER PRIMARY KEY,
-    w_name    VARCHAR(16) NOT NULL,
-    w_street  VARCHAR(32) NOT NULL,
-    w_city    VARCHAR(32) NOT NULL,
-    w_country VARCHAR(16) NOT NULL
-);
-
-CREATE TABLE stocks (
-    w_id  INTEGER REFERENCES warehouses(w_id),
-    i_id  INTEGER REFERENCES items(i_id),
-    s_qty SMALLINT CHECK(s_qty > 0),
-    PRIMARY KEY (w_id, i_id)
-);
-```
-
-The four benchmark queries cover all supported operators:
-
-| File | Operators | Why-Not scenario |
-|---|---|---|
-| `q1_select.sql` | SCAN + SELECT | Item filtered by price threshold |
-| `q2_project.sql` | SCAN + SELECT + PROJECT | Column projected away |
-| `q3_join.sql` | SCAN + JOIN + SELECT | Missing stock record or low quantity |
-| `q4_union.sql` | SCAN + SELECT + UNION | Warehouse in neither country |
-
----
-
-## 4. Installation
-
-### Prerequisites
-
-- Python 3.9+
-- PostgreSQL 13+ with the TPC-C database loaded
-- (Optional) ProvSQL extension for PostgreSQL
-
-### Python setup
-
-```bash
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### Database credentials
-
-```bash
-cp .env.example .env
-# Edit .env — set DB_PASSWORD to your PostgreSQL password
-```
-
-### Load TPC-C data
-
-Run in pgAdmin Query Tool or psql:
-
-```sql
-\i TPC_C_export/TPCCSchema.sql
-\i TPC_C_export/TPCCItems.sql
-\i TPC_C_export/TPCCWarehouses.sql
-\i TPC_C_export/TPCCStocks.sql
-```
-
-### ProvSQL setup (optional)
-
-ProvSQL is easiest to install on Linux or via Docker on Windows.
-
-**Linux (from source):**
-```bash
-git clone https://github.com/PierreSenellart/provsql.git
-cd provsql && make && sudo make install
-# In psql: CREATE EXTENSION provsql;
-```
-
-**Windows (via Docker):**
-```bash
-docker pull pierresenellart/provsql
-docker run -p 5432:5432 -e POSTGRES_PASSWORD=yourpassword pierresenellart/provsql
-# Then load the TPC-C data into this container's PostgreSQL instance
-```
-
-If ProvSQL is not installed, the system falls back to primary-key-based tokens
-automatically. All semiring evaluation is functionally identical.
-
----
-
-## 5. Usage
-
-### Print operator tree
-
-```bash
-python cli.py tree --query queries/q1_select.sql
-```
-
-### Evaluate with K-relation annotations
-
-```bash
-python cli.py evaluate --query queries/q3_join.sql --semiring how
-python cli.py evaluate --query queries/q3_join.sql --semiring why
-```
-
-### Explain a missing tuple
-
-```bash
-# Q1 — price filter
-python cli.py explain \
-    --query queries/q1_select.sql \
-    --missing "i_name=Meprobamate,i_price=11.64"
-
-# Q3 — missing join partner (item with no stock at this warehouse)
-python cli.py explain \
-    --query queries/q3_join.sql \
-    --missing "i_name=SYLATRON,w_id=301"
-
-# Q3 — stock exists but quantity below threshold
-python cli.py explain \
-    --query queries/q3_join.sql \
-    --missing "i_name=Indapamide,w_id=301,s_qty=338"
-
-# Q4 — warehouse absent from both UNION branches
-python cli.py explain \
-    --query queries/q4_union.sql \
-    --missing "w_name=DabZ,w_country=Indonesia"
-
-# Restrict to a single semiring
-python cli.py explain \
-    --query queries/q1_select.sql \
-    --missing "i_name=Meprobamate,i_price=11.64" \
-    --semiring how
-```
-
----
-
-## 6. Benchmark
-
-### Correctness
-
-8 ground-truth test cases across all four query types:
-
-```bash
-python cli.py benchmark correctness
-```
-
-Each test specifies a missing tuple and the expected `Cause` enum value.
-The benchmark reports PASS/FAIL per test and overall score.
-
-### Performance
-
-Measures execution time (min/mean/max over 10 runs) comparing:
-- **baseline** — plain SQL executed directly in PostgreSQL
-- **k_rel_{semiring}** — K-relation evaluation in Python per semiring
-- **why_not_full** — K-relation + why-not diagnosis (all semirings)
-
-```bash
-python cli.py benchmark performance
-```
-
-The overhead of K-relation evaluation relative to the SQL baseline quantifies
-the cost of provenance tracking under each semiring — a key result for the paper.
-
----
-
-## 7. File Structure
-
-```
+```text
 .
-├── cli.py                    Entry point
-├── config.py                 DB connection settings (loaded from .env)
-├── .env.example              Credentials template
-├── requirements.txt
-│
-├── src/
-│   ├── semirings.py          Boolean, Bag, Why, How semiring implementations
-│   ├── parser.py             SQL string -> operator tree
-│   ├── annotator.py          ProvSQL / token assignment; builds K-relations
-│   ├── evaluator.py          K-relation evaluation with EvaluationTrace
-│   ├── why_not.py            Why-not diagnosis engine
-│   └── explainer.py          Human-readable report formatter
-│
-├── benchmark/
-│   ├── correctness.py        Ground-truth correctness tests (8 cases)
-│   └── performance.py        Timing benchmarks (baseline vs K-relation)
-│
-├── queries/
-│   ├── q1_select.sql         SCAN + SELECT
-│   ├── q2_project.sql        SCAN + SELECT + PROJECT
-│   ├── q3_join.sql           SCAN + JOIN + SELECT
-│   └── q4_union.sql          SCAN + SELECT + UNION
-│
-└── TPC_C_export/             TPC-C SQL schema and data files
+├── rule_firing/            Teammate implementation for firing-rules why-not provenance
+├── semiring_provenance/    Semiring-based provenance system, queries, benchmarks, and TPC-C assets
+├── submission_documents/   Report sources, outline, and benchmark/result files used for submission
+├── .env.example            Database configuration template
+└── README.md               Top-level guide
 ```
 
-### Extending the system
+## What Is Where
 
-**New semiring:** Subclass `Semiring` in `src/semirings.py`, implement the five
-abstract methods (`zero`, `one`, `add`, `mul`, `token`), and register it in
-the `SEMIRINGS` dict.
+### `rule_firing/`
+- Rule-firing implementation and notes.
+- Includes the `firing_rules/` package, visualizer work, tests, and the original archive kept locally for reference.
 
-**New operator:** Add a node dataclass in `src/parser.py`, a parse branch in
-`_parse_select()`, a `_eval_*` method in `src/evaluator.py`, and a diagnosis
-branch in `src/why_not.py`.
+### `semiring_provenance/`
+- Main Python implementation for semiring-based why-not provenance.
+- Contains:
+  - `src/` for parser, annotator, evaluator, semirings, and explainer
+  - `queries/` for the core SQL examples
+  - `benchmark/` for correctness and performance scripts
+  - `TPC_C_export/` for the TPC-C schema/data loading files
+  - `cli.py` and `main.py` for running the system
 
-**3-way joins:** Parse chained JOINs into a left-deep `JoinNode` tree and
-extend `_trace_node` in `src/why_not.py` to recurse through join chains.
+### `submission_documents/`
+- `report/` for LaTeX sources and figures
+- `outline/` for the original project brief
+- `results/` for benchmark outputs used in analysis
 
----
+## Quick Start
 
-## References
+1. Copy `.env.example` to `.env` in the repo root and fill in the PostgreSQL credentials.
+2. Create a virtual environment and install the semiring dependencies:
 
-- Green, Karvounarakis, Tannen. *Provenance Semirings.* PODS 2007.
-- Chapman, Jagadish. *Why Not?* SIGMOD 2009.
-- Senellart et al. *ProvSQL: Provenance and Probability Management in PostgreSQL.* VLDB 2018.
-- TPC-C Benchmark Specification. Transaction Processing Performance Council.
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r semiring_provenance\requirements.txt
+```
+
+3. Load the TPC-C files from `semiring_provenance/TPC_C_export/` into PostgreSQL.
+
+## Running The Semiring System
+
+```powershell
+python semiring_provenance\cli.py tree --query semiring_provenance\queries\q1_select.sql
+python semiring_provenance\cli.py evaluate --query semiring_provenance\queries\q3_join.sql --semiring how
+python semiring_provenance\cli.py explain --query semiring_provenance\queries\q1_select.sql --missing "i_name=Meprobamate,i_price=11.64"
+python semiring_provenance\cli.py benchmark correctness
+python semiring_provenance\cli.py benchmark performance
+```
+
+## Notes For GitHub Submission
+
+- Local environments, caches, Claude settings, and archived zip files are ignored.
+- The repo keeps both approaches side by side because the report compares them directly.
+- Submission-facing materials are grouped under `submission_documents/` so the final deliverables are easy to find.

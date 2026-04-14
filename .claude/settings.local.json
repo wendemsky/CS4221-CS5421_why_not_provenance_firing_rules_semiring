@@ -6,7 +6,12 @@
       "Bash(mkdir -p \"/c/Users/himan/Documents/Personal/NUS/Coursework/Semester 3/CS5421 - Database Tuning/Project/queries\")",
       "Bash(source venv/Scripts/activate)",
       "Bash(python -c \":*)",
-      "Bash(python cli.py benchmark correctness)"
+      "Bash(python cli.py benchmark correctness)",
+      "Bash(python main.py)",
+      "Bash(venv/Scripts/python main.py)",
+      "Bash(venv/Scripts/python cli.py explain --query queries/q1_select.sql --missing \"i_name=Meprobamate,i_price=11.64\")",
+      "Bash(venv/Scripts/python -m benchmark.run_firing_rules_benchmark)",
+      "Bash(echo \"Exit: $?\")"
     ]
   }
 }

@@ -8,18 +8,28 @@ __pycache__/
 *.pyo
 venv/
 .venv/
+.pytest_cache/
+.mypy_cache/
 *.egg-info/
 dist/
 build/
 
-# IDE
+# IDE / local tools
 .vscode/
 .idea/
+.claude/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
 
-# Benchmark output
-benchmark/results/
-*.csv
-*.png
+# Local archives / generated artifacts
+rule_firing/why-not-provenance-main.zip
+firing_rules/
+
+# Nested environment copies inside the rule-firing work
+rule_firing/firing_rules/.venv/
+rule_firing/firing_rules/__pycache__/
+rule_firing/tests/__pycache__/
+semiring_provenance/benchmark/__pycache__/
+semiring_provenance/src/__pycache__/
+semiring_provenance/__pycache__/

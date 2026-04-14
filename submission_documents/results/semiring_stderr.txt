@@ -1,0 +1,22 @@
+# done Q01
+# done Q02
+# done Q03
+# done Q04
+# done Q05
+# done Q06
+# done Q07
+# done Q08
+# done Q09
+# done Q10
+# SKIP Q11 (JOIN_3WAY): requires chained JOIN — extend parser to include.
+# SKIP Q12 (JOIN_3WAY): requires chained JOIN — extend parser to include.
+# SKIP Q13 (JOIN_3WAY): requires chained JOIN — extend parser to include.
+# SKIP Q14 (JOIN_3WAY): requires chained JOIN — extend parser to include.
+# done Q15
+# done Q16
+# done Q17
+# done Q18
+# done Q19
+# done Q20
+
+# Skipped 4 JOIN_3WAY queries: ['Q11', 'Q12', 'Q13', 'Q14']

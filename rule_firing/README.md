@@ -15,43 +15,25 @@ Instead of only returning empty/non-empty results, the system returns:
 
 ---
 
-## Repository layout
-
-```text
-.
-├── firing_rules/          # Main implementation (engine + parser + CLI)
-│   ├── why_not_provenance.py
-│   ├── provenance/
-│   ├── README.md
-│   └── firing_rules.md
-├── tests/                 # SQL-focused provenance test plan
-│   └── README.md
-└── TPC_C_export/          # Sample SQL schema/data files (TPC-C subset)
-    ├── TPCCSchema.sql
-    ├── TPCCItems.sql
-    ├── TPCCWarehouses.sql
-    ├── TPCCStocks.sql
-    ├── TPCCClean.sql
-    └── TPCCReadme.txt
-```
-
----
-
 ## Quick start
+
+Before you start, make sure to use the virtual environment configured in this directory to use the necessary packages.
 
 1. Enter the project implementation directory:
 
 ```bash
-cd firing_rules
+cd rule_firing
 ```
 
 2. Run on an input file:
 
+Navigate to `rule_firing/src` and run.
+
 ```bash
-python3 why_not_provenance.py < test.txt > test_result.json
+python3 why_not_provenance.py < YOUR_INPUT_FILE.txt > YOUR_OUTPUT_FILE.json
 ```
 
-3. (Optional) Enable PostgreSQL-backed mode with `.env`:
+3. (Optional) Enable PostgreSQL-backed mode with `.env` (`env` should be placed in `rule_firing/src`):
 
 ```env
 WHY_NOT_DB_CONNECTION=postgresql://user:pass@host:5432/db
